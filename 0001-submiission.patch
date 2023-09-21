@@ -1,0 +1,705 @@
+From 5169c8a5773c90b119b2675b30f6e00e281c5794 Mon Sep 17 00:00:00 2001
+From: Devesh Varma <deveshvarma@iisc.ac.in>
+Date: Mon, 13 Mar 2023 16:50:06 +0530
+Subject: [PATCH] submiission
+
+---
+ .../Utils/hoist-anticipated-expressions.h     |  15 +
+ llvm/lib/Passes/PassBuilder.cpp               |   1 +
+ llvm/lib/Passes/PassRegistry.def              |   1 +
+ llvm/lib/Transforms/CMakeLists.txt            |   1 +
+ .../HoistAnticipated/CMakeLists.txt           |   8 +
+ .../Transforms/HoistAnticipated/commands.txt  |   6 +
+ .../hoist-anticipated-expressions.cpp         | 293 ++++++++++++++++++
+ llvm/lib/Transforms/Utils/CMakeLists.txt      |   1 +
+ .../Utils/hoist-anticipated-expressions.cpp   | 281 +++++++++++++++++
+ 9 files changed, 607 insertions(+)
+ create mode 100644 llvm/include/llvm/Transforms/Utils/hoist-anticipated-expressions.h
+ create mode 100644 llvm/lib/Transforms/HoistAnticipated/CMakeLists.txt
+ create mode 100644 llvm/lib/Transforms/HoistAnticipated/commands.txt
+ create mode 100644 llvm/lib/Transforms/HoistAnticipated/hoist-anticipated-expressions.cpp
+ create mode 100644 llvm/lib/Transforms/Utils/hoist-anticipated-expressions.cpp
+
+diff --git a/llvm/include/llvm/Transforms/Utils/hoist-anticipated-expressions.h b/llvm/include/llvm/Transforms/Utils/hoist-anticipated-expressions.h
+new file mode 100644
+index 000000000000..f7b5b47933f9
+--- /dev/null
++++ b/llvm/include/llvm/Transforms/Utils/hoist-anticipated-expressions.h
+@@ -0,0 +1,15 @@
++#ifndef LLVM_TRANSFORMS_HELLONEW_HELLOWORLD_H
++#define LLVM_TRANSFORMS_HELLONEW_HELLOWORLD_H
++
++#include "llvm/IR/PassManager.h"
++
++namespace llvm {
++
++class AnticipatedExpr : public PassInfoMixin<AnticipatedExpr> {
++public:
++  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
++};
++
++} // namespace llvm
++
++#endif // LLVM_TRANSFORMS_HELLONEW_HELLOWORLD_H
+diff --git a/llvm/lib/Passes/PassBuilder.cpp b/llvm/lib/Passes/PassBuilder.cpp
+index 4b8754df7fb6..4d14ae50a481 100644
+--- a/llvm/lib/Passes/PassBuilder.cpp
++++ b/llvm/lib/Passes/PassBuilder.cpp
+@@ -252,6 +252,7 @@
+ #include "llvm/Transforms/Utils/SymbolRewriter.h"
+ #include "llvm/Transforms/Utils/UnifyFunctionExitNodes.h"
+ #include "llvm/Transforms/Utils/UnifyLoopExits.h"
++#include "llvm/Transforms/Utils/hoist-anticipated-expressions.h"
+ #include "llvm/Transforms/Vectorize/LoadStoreVectorizer.h"
+ #include "llvm/Transforms/Vectorize/LoopVectorize.h"
+ #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
+diff --git a/llvm/lib/Passes/PassRegistry.def b/llvm/lib/Passes/PassRegistry.def
+index 73ab87dd8823..8784ba0ae15e 100644
+--- a/llvm/lib/Passes/PassRegistry.def
++++ b/llvm/lib/Passes/PassRegistry.def
+@@ -298,6 +298,7 @@ FUNCTION_PASS("make-guards-explicit", MakeGuardsExplicitPass())
+ FUNCTION_PASS("gvn-hoist", GVNHoistPass())
+ FUNCTION_PASS("gvn-sink", GVNSinkPass())
+ FUNCTION_PASS("helloworld", HelloWorldPass())
++FUNCTION_PASS("hoist-anticipated-expressions",  AnticipatedExpr())
+ FUNCTION_PASS("infer-address-spaces", InferAddressSpacesPass())
+ FUNCTION_PASS("instcombine", InstCombinePass())
+ FUNCTION_PASS("instcount", InstCountPass())
+diff --git a/llvm/lib/Transforms/CMakeLists.txt b/llvm/lib/Transforms/CMakeLists.txt
+index dda5f6de11e3..cf6c57b0e9a3 100644
+--- a/llvm/lib/Transforms/CMakeLists.txt
++++ b/llvm/lib/Transforms/CMakeLists.txt
+@@ -9,3 +9,4 @@ add_subdirectory(Hello)
+ add_subdirectory(ObjCARC)
+ add_subdirectory(Coroutines)
+ add_subdirectory(CFGuard)
++add_subdirectory(HoistAnticipated)
+diff --git a/llvm/lib/Transforms/HoistAnticipated/CMakeLists.txt b/llvm/lib/Transforms/HoistAnticipated/CMakeLists.txt
+new file mode 100644
+index 000000000000..d1b51670bf8d
+--- /dev/null
++++ b/llvm/lib/Transforms/HoistAnticipated/CMakeLists.txt
+@@ -0,0 +1,8 @@
++add_llvm_library( LLVMHoistAnticipated MODULE BUILDTREE_ONLY
++hoist-anticipated-expressions.cpp
++
++  DEPENDS
++  intrinsics_gen
++  PLUGIN_TOOL
++  opt
++  )
+diff --git a/llvm/lib/Transforms/HoistAnticipated/commands.txt b/llvm/lib/Transforms/HoistAnticipated/commands.txt
+new file mode 100644
+index 000000000000..5bf7f2bc29ff
+--- /dev/null
++++ b/llvm/lib/Transforms/HoistAnticipated/commands.txt
+@@ -0,0 +1,6 @@
++ninja     
++
++./bin/opt -S -load lib/LLVMHoistAnticipated.so -enable-new-pm=0 -verybusypass hoist.ll > /dev/null -------> in build
++
++bin/FileCheck hoist.ll --input-file output.ll  ------> in build
++
+diff --git a/llvm/lib/Transforms/HoistAnticipated/hoist-anticipated-expressions.cpp b/llvm/lib/Transforms/HoistAnticipated/hoist-anticipated-expressions.cpp
+new file mode 100644
+index 000000000000..ff7668bf079f
+--- /dev/null
++++ b/llvm/lib/Transforms/HoistAnticipated/hoist-anticipated-expressions.cpp
+@@ -0,0 +1,293 @@
++#include "llvm/IR/Attributes.h"
++#include "llvm/IR/BasicBlock.h"
++#include "llvm/IR/CFG.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/InstrTypes.h"
++#include "llvm/IR/Instruction.h"
++#include "llvm/IR/Instructions.h"
++#include "llvm/Pass.h"
++#include "llvm/Support/raw_ostream.h"
++#include <bits/stdc++.h>
++
++using namespace llvm;
++
++void use_set(Function &F,
++             std::map<BasicBlock *, std::set<Instruction *>> &use) {
++
++  for (BasicBlock &basic : F) {
++    for (Instruction &Inst : basic) {
++      if (isa<BinaryOperator>(Inst) || isa<CallInst>(Inst) ||
++          isa<CastInst>(Inst) || isa<CmpInst>(Inst) || isa<SelectInst>(Inst)) {
++        bool defined = false;
++        // Check if any of the operands are defined before the instruction in
++        // the same block
++        for (unsigned i = 0, e = Inst.getNumOperands(); i != e; ++i) {
++          if (Instruction *Def = dyn_cast<Instruction>(Inst.getOperand(i))) {
++            if (Def->getParent() == &basic && Def->comesBefore(&Inst)) {
++              defined = true;
++              break;
++            }
++          }
++        }
++
++        if (!defined) {
++          use[&(basic)].insert(&Inst);
++        }
++      }
++    }
++  }
++}
++
++void def_set(Function &F,
++             std::map<BasicBlock *, std::set<Instruction *>> &def) {
++
++  for (BasicBlock &basic : F) {
++    for (Instruction &Inst : basic) {
++      // Iterate over every use of the instruction
++      for (Use &U : Inst.uses()) {
++        if (Instruction *UseInst = dyn_cast<Instruction>(U.getUser())) {
++          // Check if the use is in the same function
++          if (UseInst->getFunction() == &F &&
++              (isa<BinaryOperator>(Inst) || isa<CallInst>(Inst) ||
++               isa<CastInst>(Inst) || isa<CmpInst>(Inst) ||
++               isa<SelectInst>(Inst))) {
++            def[&basic].insert(UseInst);
++          }
++        }
++      }
++    }
++  }
++}
++
++std::set<Instruction *> set_intersect(std::set<Instruction *> S1,
++                                      std::set<Instruction *> S2) {
++
++  std::set<Instruction *> ans;
++  for (auto it1 = S1.begin(); it1 != S1.end(); ++it1) {
++    for (auto it2 = S2.begin(); it2 != S2.end(); ++it2) {
++      if ((*it1)->isIdenticalToWhenDefined(*it2)) {
++        ans.insert(*it1);
++        break;
++      }
++    }
++  }
++  return ans;
++}
++
++std::set<Instruction *> set_difference(std::set<llvm::Instruction *> S1,
++                                       std::set<llvm::Instruction *> S2) {
++  std::set<Instruction *> ans;
++  bool flag;
++  for (auto i1 = S1.begin(); i1 != S1.end(); ++i1) {
++    flag = false;
++    for (auto i2 = S2.begin(); i2 != S2.end(); ++i2) {
++      if ((*i1)->isIdenticalToWhenDefined(*i2)) {
++        flag = true;
++        break;
++      }
++    }
++    if (!flag) {
++      ans.insert(*i1);
++    }
++  }
++  return ans;
++}
++
++std::set<Instruction *> set_union(std::set<llvm::Instruction *> S1,
++                                  std::set<llvm::Instruction *> S2) {
++  std::set<Instruction *> diff = S2;
++  bool flag;
++  for (std::set<Instruction *>::iterator I1 = S1.begin(); I1 != S1.end();
++       I1++) {
++    flag = false;
++    for (std::set<Instruction *>::iterator I2 = S2.begin(); I2 != S2.end();
++         I2++) {
++      if ((**I1).isIdenticalToWhenDefined(*I2)) {
++        flag = true;
++        break;
++      }
++    }
++    if (!flag) {
++      diff.insert(*I1);
++    }
++  }
++  return diff;
++}
++
++std::set<llvm::Instruction *> deleteI;
++
++void bfs(llvm::BasicBlock *basicBlock, std::set<llvm::Instruction *> s1) {
++
++  std::queue<BasicBlock *> q;
++  std::set<BasicBlock *> visited;
++  q.push(basicBlock);
++  visited.insert(basicBlock);
++
++  while (!q.empty()) {
++    BasicBlock *curr = q.front();
++    q.pop();
++
++    for (Instruction *s : s1) {
++      for (Instruction &i : *curr) {
++        if (i.isIdenticalToWhenDefined(s) && i.getParent() != s->getParent()) {
++          i.replaceAllUsesWith(s);
++          deleteI.insert(&i);
++        }
++      }
++    }
++
++    for (auto succbasic : successors(curr)) {
++      if (!visited.count(succbasic)) {
++        q.push(succbasic);
++        visited.insert(succbasic);
++      }
++    }
++  }
++}
++
++void dfs(llvm::BasicBlock *basicBlock, std::set<llvm::BasicBlock *> &visited,
++         std::set<llvm::Instruction *> si) {
++  visited.insert(basicBlock);
++  for (std::set<Instruction *>::iterator I1 = si.begin(); I1 != si.end();
++       I1++) {
++    for (BasicBlock::iterator j = basicBlock->begin(); j != basicBlock->end();
++         j++) {
++      if (j->isIdenticalToWhenDefined(*I1) &&
++          j->getParent() != (*I1)->getParent()) {
++        j->replaceAllUsesWith(*I1);
++        deleteI.insert(&(*j));
++      }
++    }
++  }
++  for (BasicBlock *succ : successors(basicBlock)) {
++    if (visited.find(succ) == visited.end()) {
++      dfs(succ, visited, si);
++    }
++  }
++}
++
++namespace {
++struct AnticipatedExpr : public FunctionPass {
++
++  static char ID;
++  AnticipatedExpr() : FunctionPass(ID) {}
++
++  virtual bool runOnFunction(Function &F) override {
++
++    while (1) {
++      deleteI.clear();
++      std::map<BasicBlock *, std::set<Instruction *>> use;
++      std::map<BasicBlock *, std::set<Instruction *>> def;
++
++      use_set(F, use);
++      def_set(F, def);
++
++      // IN initialization
++      std::map<BasicBlock *, std::set<Instruction *>> IN;
++      std::map<BasicBlock *, std::set<Instruction *>> OUT;
++      std::set<Instruction *> I;
++
++      for (BasicBlock &basic : F) {
++        // Iterate over every instruction in the basic block
++        for (Instruction &Inst : basic) {
++          if (isa<BinaryOperator>(Inst) || isa<CallInst>(Inst) ||
++              isa<CastInst>(Inst) || isa<CmpInst>(Inst) ||
++              isa<SelectInst>(Inst)) {
++            I.insert(&(Inst));
++          }
++        }
++      }
++
++      for (BasicBlock &basic : F) {
++        IN[&(basic)].insert(I.begin(), I.end());
++      }
++
++      while (1) {
++        int flag1 = 0;
++        for (Function::iterator basic = F.begin(), E = F.end(); basic != E;
++             ++basic) {
++          std::set<Instruction *> S, temp, temp1;
++          temp1.insert(OUT[&(*basic)].begin(), OUT[&(*basic)].end());
++          int count = 0;
++
++          for (BasicBlock *Succ : successors(&(*basic))) {
++            if (count == 0) {
++              OUT[&(*basic)] = IN[&(*Succ)];
++            } else {
++              OUT[&(*basic)] = set_intersect(OUT[&(*basic)], IN[&(*Succ)]);
++            }
++            count++;
++          }
++          temp.insert(IN[&(*basic)].begin(), IN[&(*basic)].end());
++          IN[&(*basic)] = set_difference(OUT[&(*basic)], def[&(*basic)]);
++          IN[&(*basic)] = set_union(IN[&(*basic)], use[&(*basic)]);
++          if (set_difference(IN[&(*basic)], temp).size() != 0 ||
++              set_difference(temp, IN[&(*basic)]).size() != 0 ||
++              (set_difference(OUT[&(*basic)], temp1).size() != 0 ||
++               set_difference(temp1, OUT[&(*basic)]).size() != 0))
++            flag1 = 1;
++        }
++
++        if (flag1 == 0)
++          break;
++      }
++
++      int flag2 = 0;
++      for (Function::iterator basic = F.begin(), E = F.end(); basic != E;
++           ++basic) {
++        if (OUT[&(*basic)].size() != 0) {
++          flag2 = 1;
++          break;
++        }
++      }
++
++      if (flag2 == 0)
++        break;
++
++      std::queue<BasicBlock *> q;
++      std::set<BasicBlock *> visitedq;
++
++      // Enqueue the entry basic block
++      BasicBlock *entrybasic = &F.getEntryBlock();
++      q.push(entrybasic);
++      visitedq.insert(entrybasic);
++
++      // BFS traversal of basic blocks
++      while (!q.empty()) {
++        BasicBlock *basicBlock = q.front();
++        q.pop();
++
++        if (OUT[basicBlock].size() == 0) {
++          // Visit its successors
++          for (auto succbasic : successors(basicBlock)) {
++            if (!visitedq.count(succbasic)) {
++              q.push(succbasic);
++              visitedq.insert(succbasic);
++            }
++          }
++          continue;
++        } else {
++          std::set<llvm::BasicBlock *> visited;
++          for (auto &ot : OUT[(basicBlock)]) {
++            if (ot->getParent() != basicBlock) {
++              ot->moveBefore(&(basicBlock->back()));
++            }
++          }
++          dfs(basicBlock, visited, OUT[(basicBlock)]);
++          for (auto &i : deleteI) {
++            i->eraseFromParent();
++          }
++          deleteI.clear();
++          break;
++        }
++      }
++    }
++    // F.print(errs());
++    return true;
++  }
++};
++} // namespace
++
++char AnticipatedExpr::ID = 0;
++static RegisterPass<AnticipatedExpr> X("hoist-anticipated-expressions",
++                                       "Hoist Anticipated Expression");
+\ No newline at end of file
+diff --git a/llvm/lib/Transforms/Utils/CMakeLists.txt b/llvm/lib/Transforms/Utils/CMakeLists.txt
+index 6663ce6c4b0a..d99007de9dca 100644
+--- a/llvm/lib/Transforms/Utils/CMakeLists.txt
++++ b/llvm/lib/Transforms/Utils/CMakeLists.txt
+@@ -82,6 +82,7 @@ add_llvm_component_library(LLVMTransformUtils
+   Utils.cpp
+   ValueMapper.cpp
+   VNCoercion.cpp
++  hoist-anticipated-expressions.cpp
+ 
+   ADDITIONAL_HEADER_DIRS
+   ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms
+diff --git a/llvm/lib/Transforms/Utils/hoist-anticipated-expressions.cpp b/llvm/lib/Transforms/Utils/hoist-anticipated-expressions.cpp
+new file mode 100644
+index 000000000000..f6f26b4014bf
+--- /dev/null
++++ b/llvm/lib/Transforms/Utils/hoist-anticipated-expressions.cpp
+@@ -0,0 +1,281 @@
++#include "llvm/Transforms/Utils/hoist-anticipated-expressions.h"
++#include "llvm/IR/Attributes.h"
++#include "llvm/IR/BasicBlock.h"
++#include "llvm/IR/CFG.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/InstrTypes.h"
++#include "llvm/IR/Instruction.h"
++#include "llvm/IR/Instructions.h"
++#include "llvm/Pass.h"
++#include "llvm/Support/raw_ostream.h"
++#include <bits/stdc++.h>
++
++using namespace llvm;
++
++void use_set(Function &F,
++             std::map<BasicBlock *, std::set<Instruction *>> &use) {
++
++  for (BasicBlock &basic : F) {
++    for (Instruction &Inst : basic) {
++      if (isa<BinaryOperator>(Inst) || isa<CallInst>(Inst) ||
++          isa<CastInst>(Inst) || isa<CmpInst>(Inst) || isa<SelectInst>(Inst)) {
++        bool defined = false;
++        // Check if any of the operands are defined before the instruction in
++        // the same block
++        for (unsigned i = 0, e = Inst.getNumOperands(); i != e; ++i) {
++          if (Instruction *Def = dyn_cast<Instruction>(Inst.getOperand(i))) {
++            if (Def->getParent() == &basic && Def->comesBefore(&Inst)) {
++              defined = true;
++              break;
++            }
++          }
++        }
++
++        if (!defined) {
++          use[&(basic)].insert(&Inst);
++        }
++      }
++    }
++  }
++}
++
++void def_set(Function &F,
++             std::map<BasicBlock *, std::set<Instruction *>> &def) {
++
++  for (BasicBlock &basic : F) {
++    for (Instruction &Inst : basic) {
++      // Iterate over every use of the instruction
++      for (Use &U : Inst.uses()) {
++        if (Instruction *UseInst = dyn_cast<Instruction>(U.getUser())) {
++          // Check if the use is in the same function
++          if (UseInst->getFunction() == &F &&
++              (isa<BinaryOperator>(Inst) || isa<CallInst>(Inst) ||
++               isa<CastInst>(Inst) || isa<CmpInst>(Inst) ||
++               isa<SelectInst>(Inst))) {
++            def[&basic].insert(UseInst);
++          }
++        }
++      }
++    }
++  }
++}
++
++std::set<Instruction *> set_intersect(std::set<Instruction *> S1,
++                                      std::set<Instruction *> S2) {
++
++  std::set<Instruction *> ans;
++  for (auto it1 = S1.begin(); it1 != S1.end(); ++it1) {
++    for (auto it2 = S2.begin(); it2 != S2.end(); ++it2) {
++      if ((*it1)->isIdenticalToWhenDefined(*it2)) {
++        ans.insert(*it1);
++        break;
++      }
++    }
++  }
++  return ans;
++}
++
++std::set<Instruction *> set_difference(std::set<llvm::Instruction *> S1,
++                                       std::set<llvm::Instruction *> S2) {
++  std::set<Instruction *> ans;
++  bool flag;
++  for (auto i1 = S1.begin(); i1 != S1.end(); ++i1) {
++    flag = false;
++    for (auto i2 = S2.begin(); i2 != S2.end(); ++i2) {
++      if ((*i1)->isIdenticalToWhenDefined(*i2)) {
++        flag = true;
++        break;
++      }
++    }
++    if (!flag) {
++      ans.insert(*i1);
++    }
++  }
++  return ans;
++}
++
++std::set<Instruction *> set_union(std::set<llvm::Instruction *> S1,
++                                  std::set<llvm::Instruction *> S2) {
++  std::set<Instruction *> diff = S2;
++  bool flag;
++  for (std::set<Instruction *>::iterator I1 = S1.begin(); I1 != S1.end();
++       I1++) {
++    flag = false;
++    for (std::set<Instruction *>::iterator I2 = S2.begin(); I2 != S2.end();
++         I2++) {
++      if ((**I1).isIdenticalToWhenDefined(*I2)) {
++        flag = true;
++        break;
++      }
++    }
++    if (!flag) {
++      diff.insert(*I1);
++    }
++  }
++  return diff;
++}
++
++std::set<llvm::Instruction *> deleteI;
++
++void bfs(llvm::BasicBlock *basicBlock, std::set<llvm::Instruction *> s1) {
++
++  std::queue<BasicBlock *> q;
++  std::set<BasicBlock *> visited;
++  q.push(basicBlock);
++  visited.insert(basicBlock);
++
++  while (!q.empty()) {
++    BasicBlock *curr = q.front();
++    q.pop();
++
++    for (Instruction *s : s1) {
++      for (Instruction &i : *curr) {
++        if (i.isIdenticalToWhenDefined(s) && i.getParent() != s->getParent()) {
++          i.replaceAllUsesWith(s);
++          deleteI.insert(&i);
++        }
++      }
++    }
++
++    for (auto succbasic : successors(curr)) {
++      if (!visited.count(succbasic)) {
++        q.push(succbasic);
++        visited.insert(succbasic);
++      }
++    }
++  }
++}
++
++void dfs(llvm::BasicBlock *basicBlock, std::set<llvm::BasicBlock *> &visited,
++         std::set<llvm::Instruction *> si) {
++  visited.insert(basicBlock);
++  for (std::set<Instruction *>::iterator I1 = si.begin(); I1 != si.end();
++       I1++) {
++    for (BasicBlock::iterator j = basicBlock->begin(); j != basicBlock->end();
++         j++) {
++      if (j->isIdenticalToWhenDefined(*I1) &&
++          j->getParent() != (*I1)->getParent()) {
++        j->replaceAllUsesWith(*I1);
++        deleteI.insert(&(*j));
++      }
++    }
++  }
++  for (BasicBlock *succ : successors(basicBlock)) {
++    if (visited.find(succ) == visited.end()) {
++      dfs(succ, visited, si);
++    }
++  }
++}
++
++PreservedAnalyses AnticipatedExpr::run(Function &F,
++                                       FunctionAnalysisManager &AM) {
++  while (1) {
++    deleteI.clear();
++    std::map<BasicBlock *, std::set<Instruction *>> use;
++    std::map<BasicBlock *, std::set<Instruction *>> def;
++
++    use_set(F, use);
++    def_set(F, def);
++
++    // IN initialization
++    std::map<BasicBlock *, std::set<Instruction *>> IN;
++    std::map<BasicBlock *, std::set<Instruction *>> OUT;
++    std::set<Instruction *> I;
++
++    for (BasicBlock &basic : F) {
++      // Iterate over every instruction in the basic block
++      for (Instruction &Inst : basic) {
++        if (isa<BinaryOperator>(Inst) || isa<CallInst>(Inst) ||
++            isa<CastInst>(Inst) || isa<CmpInst>(Inst) ||
++            isa<SelectInst>(Inst)) {
++          I.insert(&(Inst));
++        }
++      }
++    }
++
++    for (BasicBlock &basic : F) {
++      IN[&(basic)].insert(I.begin(), I.end());
++    }
++
++    while (1) {
++      int flag1 = 0;
++      for (Function::iterator basic = F.begin(), E = F.end(); basic != E;
++           ++basic) {
++        std::set<Instruction *> S, temp, temp1;
++        temp1.insert(OUT[&(*basic)].begin(), OUT[&(*basic)].end());
++        int count = 0;
++
++        for (BasicBlock *Succ : successors(&(*basic))) {
++          if (count == 0) {
++            OUT[&(*basic)] = IN[&(*Succ)];
++          } else {
++            OUT[&(*basic)] = set_intersect(OUT[&(*basic)], IN[&(*Succ)]);
++          }
++          count++;
++        }
++        temp.insert(IN[&(*basic)].begin(), IN[&(*basic)].end());
++        IN[&(*basic)] = set_difference(OUT[&(*basic)], def[&(*basic)]);
++        IN[&(*basic)] = set_union(IN[&(*basic)], use[&(*basic)]);
++        if (set_difference(IN[&(*basic)], temp).size() != 0 ||
++            set_difference(temp, IN[&(*basic)]).size() != 0 ||
++            (set_difference(OUT[&(*basic)], temp1).size() != 0 ||
++             set_difference(temp1, OUT[&(*basic)]).size() != 0))
++          flag1 = 1;
++      }
++
++      if (flag1 == 0)
++        break;
++    }
++
++    int flag2 = 0;
++    for (Function::iterator basic = F.begin(), E = F.end(); basic != E;
++         ++basic) {
++      if (OUT[&(*basic)].size() != 0) {
++        flag2 = 1;
++        break;
++      }
++    }
++
++    if (flag2 == 0)
++      break;
++
++    std::queue<BasicBlock *> q;
++    std::set<BasicBlock *> visitedq;
++
++    // Enqueue the entry basic block
++    BasicBlock *entrybasic = &F.getEntryBlock();
++    q.push(entrybasic);
++    visitedq.insert(entrybasic);
++
++    // BFS traversal of basic blocks
++    while (!q.empty()) {
++      BasicBlock *basicBlock = q.front();
++      q.pop();
++
++      if (OUT[basicBlock].size() == 0) {
++        // Visit its successors
++        for (auto succbasic : successors(basicBlock)) {
++          if (!visitedq.count(succbasic)) {
++            q.push(succbasic);
++            visitedq.insert(succbasic);
++          }
++        }
++        continue;
++      } else {
++        std::set<llvm::BasicBlock *> visited;
++        for (auto &ot : OUT[(basicBlock)]) {
++          if (ot->getParent() != basicBlock) {
++            ot->moveBefore(&(basicBlock->back()));
++          }
++        }
++        dfs(basicBlock, visited, OUT[(basicBlock)]);
++        for (auto &i : deleteI) {
++          i->eraseFromParent();
++        }
++        deleteI.clear();
++        break;
++      }
++    }
++  }
++  return PreservedAnalyses::none();
++}
+\ No newline at end of file
+-- 
+2.17.1
+
